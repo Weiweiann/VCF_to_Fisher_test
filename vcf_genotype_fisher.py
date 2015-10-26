@@ -1,12 +1,13 @@
 # coding: utf-8
+# %load ./vcf_genotype_fisher.py
 from pathlib import Path
+import os
 import sys
 import argparse
 import yaml
 import pandas as pd
-import linecache
-from progressbar import *
 from datetime import datetime
+
 
 # argument parse
 parser = argparse.ArgumentParser(description="Input the list of control and patient vcf file in yaml type.")
@@ -15,7 +16,7 @@ args = parser.parse_args()
 list_path = args.list
 p = Path(list_path).parent
 
-
+print(p.absolute())
 # read the yaml file listed the file names of controls and patients
 vcf_list = []
 with open(list_path) as f:
@@ -36,6 +37,7 @@ with open(list_path) as f:
 print("[", str(datetime.now()), "]", "starting building union snp location table.")
 location = set()
 for n, vcf_single in enumerate(vcf_list):
+    print("gathering from ", vcf_single.name)
     with vcf_single.open() as vcf:
         for num, line in enumerate(vcf):
             if line.startswith("#") != True:
@@ -45,133 +47,128 @@ for n, vcf_single in enumerate(vcf_list):
     with vcf_single.open() as vcf:
         for num,  line in enumerate(vcf):
             if num >= skipline_num:
-                block = line.split('\t')
-                chromosome = block[0]
-                position = block[1]
-                ref = block[3]
-                PK = chromosome + ":" + position + ":" + ref
-                location.add(PK)
+                try:
+                    block = line.split('\t')
+                    chromosome = block[0]
+                    position = block[1]
+                    ref = block[3]
+                    alt = block[4]
+                    PK = chromosome + ":" + position + ":" + ref + ":" + alt
+                    location.add(PK)
+                except:
+                    # print("Warning: there are '#' outside off header")
+                    pass
 
-Location = []
+Location=[]
+                
 for i in range(0,len(location)):
     Location.append(location.pop())
 
 Location = sorted(Location)
+print("the union snp location table contains ", len(Location), " row.")
 
 
+chromo = ['chr1','chr2','chr3','chr4','chr5','chr6','chr7','chr8','chr9','chr10', 
+          'chr11','chr12','chr13','chr14','chr15','chr16','chr17','chr18','chr19',
+          'chr20','chr21','chr22','chrX','chrY','chrM']
+
+if not os.path.exists(str(p.absolute()) + '/Snp_index'):
+    os.mkdir(str(p.absolute()) + '/Snp_index')
+else:
+    pass
+    print("The SNP_index folder exists. Rewriting.", flush=True)
+    
+    
+    
+
+for c in chromo:
+    with open(str(p.absolute()) + '/Snp_index/' + c, 'w') as file:
+        for line in Location:
+            if line.startswith(c):
+                print(line, file=file)
+
+del(Location)
+#----------------------------------
 ## transform the GT in vcf file into Genotype.
 #from IPython.html.widgets import FloatProgress
 #from IPython.display import display
 #from time import sleep
 starttime = datetime.now()
-Genotype_all = pd.DataFrame()
 
+for chromo_file in os.listdir(str(p.absolute()) + '/Snp_index'):
+    print("[" + str(datetime.now()) + "]" + "Handling", chromo_file)
+    chromo_index = []
+    with open(str(p.absolute()) + '/Snp_index/' + chromo_file) as f:
+        for line in f:
+            chromo_index.append(line)
+            
+    if len(chromo_index) != 0:        
+        Genotype_all_chromo = pd.DataFrame()
+        for n, vcf_single in enumerate(vcf_list):
+            print("\tprocessing " + str(n+1) +"/" + str(len(vcf_list)) + " sample: " + vcf_single.name, flush=True)
+            with vcf_single.open() as vcf:
 
-for n, vcf_single in enumerate(vcf_list):
-    print("[" + str(datetime.now()) + "]" + "processing " + str(n+1) +"/" + str(len(vcf_list)) + " sample: " + vcf_single.name, flush=True)
-    with vcf_single.open() as vcf:
-        PK_sample = []
+                # define the header length of .vcf, prepare to skip it.
+                for num, line in enumerate(vcf):
+                    if line.startswith("#") != True:
+                        skipline_num = num
+                        break
 
-        # define the header length of .vcf, prepare to skip it.
-        for num, line in enumerate(vcf):
-            if line.startswith("#") != True:
-                skipline_num = num
-                break
+            # build the snp table for each sample first
+            with vcf_single.open() as vcf:
+                PK_sample = dict()  # dict(vcf_per_line:index)
+                Sample = []
+                line_count = 0
 
+                for num, line in enumerate(vcf):
+                    if num >= skipline_num:
+                        try:
+                            block = line.split('\t')
+                            chromosome = block[0]
+                            position = block[1]
+                            ref = block[3]
+                            alt = block[4]
+                            PK = chromosome + ":" + position + ":" +ref + ":" + alt
+                            PK_sample[PK] = line_count
+                            line_count += 1
+                            Sample.append(line)
+                        except:
+                            # print("Warning: there are '#' outside off header")
+                            pass
 
-    # build the snp table for each sample first
-    with vcf_single.open() as vcf:
-        PK_sample = dict()
-        Sample = []
-        line_count = 0
+                #f = FloatProgress(min = 0, max = len(Location)-1)
+                #display(f)
 
-        for num, line in enumerate(vcf):
-            if num >= skipline_num:
-                block = line.split('\t')
-                chromosome = block[0]
-                position = block[1]
-                ref = block[3]
-                PK = chromosome + ":" + position + ":" +ref
-                PK_sample[PK] = line_count
-                line_count += 1
-                Sample.append(line)
+                Genotype = ["None"]*len(chromo_index)
+                for i in range(0,len(chromo_index)):
+                    #f.value = i
+                    row = chromo_index[i]
+                    if row in PK_sample.keys():   # get the vcf line of sample, and transfer the GT label.
+                        index = PK_sample[row]
+                        block = Sample[index].split('\t')
+                        ref = block[3]
+                        atl = block[4].split(',')
+                        if atl != '<CNV>':
+                            table = [ref] + [a for a in atl]
+                            GT = block[9].split(':')[0]
+                            genotype_row = []
+                            for geno_num in GT.split('/'):
+                                genotype_row.append(table[int(geno_num)])
 
+                            Genotype[i] = ''.join(genotype_row)
+                    else:
+                        ref = row.split(':')[2]
+                        Genotype[i] = ""+ref+ref
+                #f.close()
+                Genotype_all_chromo[vcf_single.name] = Genotype
 
-        #f = FloatProgress(min = 0, max = len(Location)-1)
-        #display(f)
-        Genotype = ["None"]*len(Location)
-        for i in range(0,len(Location)):
-            #f.value = i
-            row = Location[i]
-            if row in PK_sample.keys():
-                index = PK_sample[row]
-                block = Sample[index].split('\t')
-                ref = block[3]
-                atl = block[4].split(',')
-                if atl != '<CNV>':
-                    table = [ref] + [a for a in atl]
-                    GT = block[9].split(':')[0]
-                    genotype_row = []
-                    for geno_num in GT.split('/'):
-                        genotype_row.append(table[int(geno_num)])
+        Genotype_all_chromo.index = chromo_index
 
-                    Genotype[i] = ''.join(genotype_row)
-            else:
-                ref = row.split(':')[2]
-                Genotype[i] = ""+ref+ref
-        #f.close()
-        Genotype_all[vcf_single.name] = Genotype
-        linecache.clearcache()
+        if not os.path.exists(str(p.absolute()) + '/Genotype_table'):
+            os.mkdir(str(p.absolute()) + '/Genotype_table')
 
-
-Genotype_all.index = Location
-
-# starting the fisher exact test.
-import scipy.stats as stats
-
-controls = Genotype_all.columns[0:Con_count]
-patients = Genotype_all.columns[Con_count: (Con_count + Pat_count)]
-refine_table = pd.DataFrame(index=["Control_AA","Control_AB","Patient_AA","Patient_AB", "pvalue","oddsratio"])
-
-#f = FloatProgress(min = 0, max = len(Genotype_all)-1)
-#display(f)
-starttime = datetime.now()
-widgets = ['Fisher-exact-test: ', Percentage(), ' ',
-           Bar(marker=RotatingMarker()), ' ', ETA(), ' ', FileTransferSpeed()]
-
-pbar = ProgressBar(widgets=widgets)
-
-print("[" + str(starttime) + "]" + "Now calculating the fisher exact test..." )
-for i in pbar(range(0,len(Genotype_all))):
-    #f.value = i
-    ref = Genotype_all.index[i].split(":")[2]
-    ref = ref+ref
-
-    Con_AA = 0
-    Con_AB = 0
-
-    for con in controls:
-        if Genotype_all[con][i] == ref:
-            Con_AA += 1
-        else:
-            Con_AB += 1
-
-
-    Pat_AA = 0
-    Pat_AB = 0
-    for pat in patients:
-        if Genotype_all[pat][i] == ref:
-            Pat_AA += 1
-        else:
-            Pat_AB += 1
-
-    oddsratio, pvalue = stats.fisher_exact([[Con_AA, Pat_AA],[Con_AB,Pat_AB]])
-
-    refine_table[Genotype_all.index[i]] = [Con_AA, Con_AB, Pat_AA, Pat_AB, pvalue, oddsratio]
-
-pbar.finish()
-#f.close()
-
-print("[" + str(datetime.now()) + "]" + "Done, spend " + str(datetime.now() - starttime))
-
-refine_table.T.to_csv(str(p.absolute()) + "/Fisher_test_output.csv")
+        Genotype_all_chromo.to_csv(str(p.absolute()) + '/Genotype_table/' + chromo_file + '.csv')
+    else:
+        print(chromo_file, " had no snp on it, skip it")
+        pass
+        
